@@ -1,0 +1,15 @@
+# Ops-Agent MVP 依赖
+# 交互层
+streamlit>=1.28.0
+# AWS SDK
+boto3>=1.28.0
+# AI 大脑 (第三阶段接入)
+# langchain>=0.3.0
+# langgraph>=0.2.0
+# IaC 引擎
+# python-terraform>=0.10.0
+# 网络计算
+ipaddress>=1.0.23
+# 数据存储
+# sqlalchemy>=2.0
+# psycopg2-binary>=2.9

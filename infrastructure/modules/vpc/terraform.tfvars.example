@@ -1,0 +1,6 @@
+cidr_block = "10.50.0.0/16"
+vpc_name   = "ops-agent-production"
+tags = {
+  Environment = "production"
+  Project     = "ops-agent"
+}

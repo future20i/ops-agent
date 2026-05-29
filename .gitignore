@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+venv/
+.venv/
+*.egg
+
+# Terraform
+*.tfstate
+*.tfstate.*
+.terraform/
+*.tfvars
+!terraform.tfvars.example
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Secrets
+.env
+*.pem
+credentials
+
+# Data
+/data/*.db
