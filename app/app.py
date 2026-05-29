@@ -1,6 +1,7 @@
 import streamlit as st
 import time
 import uuid
+import json
 
 st.set_page_config(page_title="运维 Agent 驾驶舱", layout="wide")
 
@@ -29,9 +30,123 @@ if "vpcs" not in st.session_state:
 if "deploy_log" not in st.session_state:
     st.session_state.deploy_log = []
 
+
+# ============================================================
+# 部署处理函数
+# ============================================================
+
+def _handle_mock_deploy(cidr: str, vpc_name: str, region: str):
+    """模拟模式部署"""
+    deploy_id = str(uuid.uuid4())[:12]
+    new_vpc_id = f"vpc-{deploy_id}"
+
+    with st.spinner(f"⏳ 正在 {region} 模拟创建 VPC..."):
+        time.sleep(1.2)
+        new_vpc = {
+            "VPC ID": new_vpc_id,
+            "CIDR": cidr,
+            "State": "available",
+            "IsDefault": False,
+            "Name": vpc_name if vpc_name else f"vpc-{deploy_id[:8]}",
+        }
+        st.session_state.vpcs[region].append(new_vpc)
+        timestamp = time.strftime("%H:%M:%S")
+        st.session_state.deploy_log.insert(0, {
+            "time": timestamp,
+            "region": region,
+            "vpc_id": new_vpc_id,
+            "cidr": cidr,
+            "status": "✅ 模拟部署成功",
+        })
+
+    st.sidebar.success(f"✅ VPC 创建成功！\n\n`{new_vpc_id}` → {cidr}")
+    st.balloons()
+
+
+def _handle_terraform_deploy(cidr: str, vpc_name: str, region: str):
+    """Terraform 模式：CIDR 检查 → init → plan → apply"""
+    from app.utils.network import validate_network_plan
+    from app.utils.terraform_executor import TerraformExecutor
+
+    # 1. CIDR 冲突检查
+    existing_cidrs = [v["CIDR"] for v in st.session_state.vpcs.get(region, [])]
+    valid, msg = validate_network_plan(cidr, existing_cidrs)
+    if not valid:
+        st.sidebar.error(f"❌ {msg}")
+        st.error(f"❌ {msg}")
+        return
+
+    # 2. Terraform init
+    with st.spinner("🔧 初始化 Terraform（首次需下载 AWS Provider，约 60s）..."):
+        tf = TerraformExecutor("infrastructure/modules/vpc")
+        init_result = tf.init()
+        if not init_result.success:
+            st.sidebar.error("Terraform init 失败")
+            st.error(f"```\n{init_result.output[-1000:]}\n```")
+            return
+
+    # 3. Terraform plan
+    with st.spinner("📋 生成执行计划（terraform plan）..."):
+        plan_result = tf.plan({
+            "cidr_block": cidr,
+            "vpc_name": vpc_name or f"ops-agent-{uuid.uuid4().hex[:8]}",
+        })
+        if not plan_result.success:
+            st.sidebar.error("Terraform plan 失败")
+            st.error(f"```\n{plan_result.output[-2000:]}\n```")
+            return
+
+    # 显示 plan 摘要
+    with st.expander("📋 Terraform Plan 详情", expanded=False):
+        st.code(plan_result.output[-3000:], language="terraform")
+
+    # 4. Terraform apply
+    with st.spinner("🚀 执行部署（terraform apply）..."):
+        apply_result = tf.apply({
+            "cidr_block": cidr,
+            "vpc_name": vpc_name or f"ops-agent-{uuid.uuid4().hex[:8]}",
+        })
+
+    if apply_result.success:
+        new_vpc = {
+            "VPC ID": apply_result.vpc_id or "pending",
+            "CIDR": cidr,
+            "State": "available",
+            "IsDefault": False,
+            "Name": vpc_name or "ops-agent",
+        }
+        st.session_state.vpcs[region].append(new_vpc)
+        timestamp = time.strftime("%H:%M:%S")
+        st.session_state.deploy_log.insert(0, {
+            "time": timestamp,
+            "region": region,
+            "vpc_id": new_vpc["VPC ID"],
+            "cidr": cidr,
+            "status": "✅ Terraform 部署成功",
+        })
+        st.sidebar.success(f"✅ Terraform 部署成功！\n\n`{new_vpc['VPC ID']}` → {cidr}")
+        st.balloons()
+
+        # 显示 apply 日志
+        with st.expander("📜 Terraform Apply 日志", expanded=False):
+            st.code(apply_result.output[-3000:], language="terraform")
+    else:
+        st.sidebar.error("Terraform apply 失败")
+        st.error(f"```\n{apply_result.output[-2000:]}\n```")
+
+
 # ============================================================
 # 侧边栏 —— 控制面板
 # ============================================================
+st.sidebar.markdown("## ⚙️ 部署引擎")
+deploy_mode = st.sidebar.radio(
+    "选择部署模式",
+    ["🧪 模拟模式", "🏗️ Terraform 模式"],
+    horizontal=True,
+)
+use_terraform = (deploy_mode == "🏗️ Terraform 模式")
+
+st.sidebar.divider()
 st.sidebar.markdown("## 🌍 地区设置")
 region = st.sidebar.selectbox("选择云地区", list(st.session_state.vpcs.keys()))
 
@@ -41,42 +156,28 @@ st.sidebar.markdown("## 🏗️ 创建新 VPC")
 with st.sidebar.form("create_vpc_form"):
     cidr = st.text_input("CIDR 地址块", placeholder="例如 10.50.0.0/16", value="10.50.0.0/16")
     vpc_name = st.text_input("VPC 名称（可选）", placeholder="my-production-vpc")
-    submitted = st.form_submit_button("🚀 一键部署 VPC", use_container_width=True, type="primary")
+    btn_label = "🚀 Terraform 部署" if use_terraform else "🚀 一键部署 VPC"
+    submitted = st.form_submit_button(btn_label, use_container_width=True, type="primary")
 
     if submitted:
         if not cidr:
             st.sidebar.error("CIDR 不能为空")
+        elif use_terraform:
+            _handle_terraform_deploy(cidr, vpc_name, region)
         else:
-            # 模拟部署过程
-            deploy_id = str(uuid.uuid4())[:12]
-            new_vpc_id = f"vpc-{deploy_id}"
-            
-            with st.spinner(f"⏳ 正在 {region} 创建 VPC..."):
-                time.sleep(1.2)  # 模拟 API 调用延迟
-                new_vpc = {
-                    "VPC ID": new_vpc_id,
-                    "CIDR": cidr,
-                    "State": "available",
-                    "IsDefault": False,
-                    "Name": vpc_name if vpc_name else f"vpc-{deploy_id[:8]}",
-                }
-                st.session_state.vpcs[region].append(new_vpc)
-                timestamp = time.strftime("%H:%M:%S")
-                st.session_state.deploy_log.insert(0, {
-                    "time": timestamp,
-                    "region": region,
-                    "vpc_id": new_vpc_id,
-                    "cidr": cidr,
-                    "status": "✅ 部署成功",
-                })
-            
-            st.sidebar.success(f"✅ VPC 创建成功！\n\n`{new_vpc_id}` → {cidr}")
-            st.balloons()
+            _handle_mock_deploy(cidr, vpc_name, region)
+
 
 # ============================================================
 # 主面板
 # ============================================================
 st.title("🚀 AWS 运维 Agent - 资产仪表盘")
+
+# 部署模式指示器
+if use_terraform:
+    st.caption("⚡ 当前模式：**Terraform 真实部署** — 将调用 terraform plan/apply 创建真实 AWS 资源")
+else:
+    st.caption("🧪 当前模式：**模拟部署** — 仅在本会话中模拟，不会创建真实云资源")
 
 # ---- VPC 列表 ----
 col1, col2 = st.columns([3, 1])
@@ -84,7 +185,7 @@ with col1:
     st.subheader(f"📋 {region} — VPC 资产清单")
 with col2:
     if st.button("🔄 刷新列表", use_container_width=True):
-        pass  # session_state 自动持久化，刷新只是重新渲染
+        pass
 
 vpcs = st.session_state.vpcs.get(region, [])
 if vpcs:
