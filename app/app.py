@@ -143,44 +143,14 @@ def _handle_terraform_deploy(cidr: str, vpc_name: str, region: str):
 
 
 def _handle_k3s_deploy(cluster_name: str, region: str, master_count: int, worker_count: int, instance_type: str):
-    """K3S 一键部署 — 分步引导"""
+    """K3S 一键部署 — 先计算，后渲染（避免 Streamlit 重复渲染）"""
     from app.agents.k3s_agent import K3SDeployer
 
-    deployer = K3SDeployer()
+    # 用 spinner 包裹全部计算，不在计算途中调用 UI 元素
+    with st.spinner(f"🚀 正在部署 K3S 集群 {cluster_name}（{master_count + worker_count} 节点）..."):
+        deployer = K3SDeployer()
+        cluster = deployer.deploy(cluster_name, region, master_count, worker_count, instance_type)
 
-    # 部署前提示
-    st.info(
-        f"📋 **部署预览**\n\n"
-        f"- 📍 地区: `{region}`\n"
-        f"- 🖥️ 实例: `{instance_type}` × {master_count + worker_count} 台\n"
-        f"- ⭐ Master: {master_count} 节点\n"
-        f"- 🔗 Worker: {worker_count} 节点\n"
-        f"- 📦 K3S 版本: `{deployer.K3S_VERSION}`"
-    )
-
-    # 进度容器
-    progress_bar = st.progress(0, "⏳ 准备中...")
-    status_container = st.empty()
-
-    # 模拟逐步部署
-    steps_data = [
-        (0.1, "🔧 系统环境准备", "安装依赖、关闭 swap、加载内核模块"),
-        (0.25, "🖥️ 创建节点实例", f"在 {region} 创建 {master_count + worker_count} 个节点"),
-        (0.45, "⭐ 初始化 Master 节点", "安装 K3S Server、生成 Token"),
-        (0.65, "🔗 加入 Worker 节点", f"将 {worker_count} 个 Worker 加入集群"),
-        (0.85, "✅ 集群验证", "检查节点状态、CoreDNS、metrics-server"),
-        (1.0, "🎉 完成", f"K3S 集群 {cluster_name} 就绪"),
-    ]
-
-    result_log = []
-    for progress, step_name, step_desc in steps_data:
-        status_container.markdown(f"**{step_name}** — {step_desc}")
-        time.sleep(0.6)
-        result_log.append(f"✅ {step_name}")
-        progress_bar.progress(progress, step_desc)
-
-    # 用真实 deployer 生成集群数据
-    cluster = deployer.deploy(cluster_name, region, master_count, worker_count, instance_type)
     st.session_state.k3s_clusters.append(cluster)
 
     # 记录日志
@@ -190,10 +160,9 @@ def _handle_k3s_deploy(cluster_name: str, region: str, master_count: int, worker
         "status": f"✅ K3S 集群就绪 ({len(cluster.nodes)} 节点)",
     })
 
-    status_container.empty()
+    # ===================== 下面全部是纯渲染 =====================
     st.success(f"🎉 K3S 集群 `{cluster.name}` 部署完成！")
 
-    # ---- 展示部署结果 ----
     col1, col2 = st.columns(2)
 
     with col1:
@@ -217,7 +186,6 @@ def _handle_k3s_deploy(cluster_name: str, region: str, master_count: int, worker
                 with st.expander("详情"):
                     st.code(step.output, language="bash")
 
-    # kubeconfig
     st.divider()
     st.subheader("🔑 kubeconfig")
     st.info(
@@ -231,9 +199,9 @@ def _handle_k3s_deploy(cluster_name: str, region: str, master_count: int, worker
             data=cluster.kubeconfig,
             file_name=f"{cluster.name}-kubeconfig.yaml",
             mime="text/yaml",
+            key=f"dl_{cluster.cluster_id}",
         )
 
-    # 引导下一步
     st.info(
         "🚀 **集群已就绪！接下来你可以：**\n\n"
         f"1. 下载 kubeconfig 并配置 `kubectl`\n"
@@ -253,6 +221,7 @@ deploy_mode = st.sidebar.radio(
     "选择部署模式",
     ["🧪 模拟模式", "🏗️ Terraform 模式"],
     horizontal=True,
+    key="deploy_mode_radio",
 )
 use_terraform = (deploy_mode == "🏗️ Terraform 模式")
 
