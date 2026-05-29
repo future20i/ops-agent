@@ -221,7 +221,6 @@ deploy_mode = st.sidebar.radio(
     "选择部署模式",
     ["🧪 模拟模式", "🏗️ Terraform 模式"],
     horizontal=True,
-    key="deploy_mode_radio",
 )
 use_terraform = (deploy_mode == "🏗️ Terraform 模式")
 
